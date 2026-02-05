@@ -4,18 +4,13 @@
 ## 此版本完全使用 Trae CN 的 MiniMax-M2.1 修改，在我的 M4 Mac mini 上效果显著提升！推荐 Mac 用户使用。
 ### _原版介绍和使用说明在本文最后_
 
-### This version is fully optimized using Trae CN's MiniMax-M2.1, with significant performance improvements on my M4 Mac mini! Recommended for Mac users.
-### _The original introduction and usage instructions are at the end of this document_
-
 ---
 
 ## 🍎 M4芯片Mac优化版本 | M4 Chip Mac Optimization
 
-This version adds comprehensive Apple Silicon M4/M3/M2/M1 GPU support using PyTorch's MPS (Metal Performance Shaders) backend. This optimization significantly improves inference performance on Mac devices with Apple Silicon chips.
-
-> **Based on**: Original [https://github.com/index-tts/index-tts](https://github.com/index-tts/index-tts) (IndexTTS-2 2025/09/08 version)
+> **基于版本**：原版 [https://github.com/index-tts/index-tts](https://github.com/index-tts/index-tts) (IndexTTS-2 2025/09/08版本)
 > 
-> **Optimization**: Code optimized using MiniMax-M2.1
+> **优化作者**：使用MiniMax-M2.1进行代码优化
 
 ### 📊 性能对比 | Performance Comparison
 

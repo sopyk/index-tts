@@ -1,14 +1,13 @@
 
 
 ---
-# This version was fully modified using Trae CN's MiniMax-M2.1, with significant performance improvements on my M4 Mac mini! Recommended for Mac users.
+## This version was fully modified using Trae CN's MiniMax-M2.1, with significant performance improvements on my M4 Mac mini! Recommended for Mac users.
+### _The original introduction and usage instructions are at the end of this document_
 
 ---
 
 ## 🍎 M4 Chip Mac Optimization Version | M4芯片Mac优化版本
 
-> **Project Repository**: [https://github.com/sopyk/index-tts](https://github.com/sopyk/index-tts)
->
 > **Based On**: Original version [https://github.com/index-tts/index-tts](https://github.com/index-tts/index-tts) (IndexTTS-2 2025/09/08 version)
 >
 > **Optimization Author**: Code optimized using MiniMax-M2.1
