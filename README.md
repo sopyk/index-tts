@@ -1,5 +1,9 @@
 
 ---
+<div align="center">
+<a href="README.md" style="font-size: 24px">简体中文</a> | 
+<a href="docs/README_en.md" style="font-size: 24px">English</a>
+</div>
 
 ## 此版本完全使用 Trae CN 的 MiniMax-M2.1 修改，在我的 M4 Mac mini 上效果显著提升！推荐 Mac 用户使用。
 ### _原版介绍和使用说明在本文最后_
