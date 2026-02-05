@@ -757,6 +757,9 @@ class UnifiedVoice(nn.Module):
             logits_processor.append(TypicalLogitsWarper(mass=typical_mass, min_tokens_to_keep=min_tokens_to_keep))
         max_length = (trunc_index + self.max_mel_tokens - 1) if max_generate_length is None else trunc_index + max_generate_length
         
+        unsupported_kwargs = ['diffusion_steps', 'inference_cfg_rate', 'max_text_tokens_per_segment']
+        hf_generate_kwargs_filtered = {k: v for k, v in hf_generate_kwargs.items() if k not in unsupported_kwargs}
+        
         # Use accel engine if available (single sequence only)
         if self.accel_engine is not None and num_return_sequences == 1:
             output = self.accel_engine.generate(
@@ -775,7 +778,7 @@ class UnifiedVoice(nn.Module):
                                                 eos_token_id=self.stop_mel_token, attention_mask=attention_mask,
                                                 max_length=max_length, logits_processor=logits_processor,
                                                 num_return_sequences=num_return_sequences,
-                                                **hf_generate_kwargs)
+                                                **hf_generate_kwargs_filtered)
         if isinstance(output, torch.Tensor):
             return output[:, trunc_index:], speech_conditioning_latent
         # GenerateOutput
