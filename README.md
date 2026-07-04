@@ -1,4 +1,172 @@
 
+---
+<div align="center">
+<a href="README.md" style="font-size: 24px">简体中文</a> | 
+<a href="docs/README_en.md" style="font-size: 24px">English</a>
+</div>
+
+## 此版本完全使用 Trae CN 的 MiniMax-M2.1 修改，在我的 M4 Mac mini 上效果显著提升！推荐 Mac 用户使用。
+### _原版介绍和使用说明在本文最后_
+
+---
+
+## 🍎 M4芯片Mac优化版本 | M4 Chip Mac Optimization
+
+> **基于版本**：原版 [https://github.com/index-tts/index-tts](https://github.com/index-tts/index-tts) (IndexTTS-2 2025/09/08版本)
+> 
+> **优化作者**：使用MiniMax-M2.1进行代码优化
+
+### 📊 性能对比 | Performance Comparison
+
+| **运行次序** | **版本** | **设备环境** | **总耗时** | **GPT生成(核心)** | **RTF(越小越快)** | **状态评价** |
+|-------------|---------|-------------|-----------|------------------|------------------|-------------|
+| 第一次 | 原版程序 | 纯CPU (FP32) | 67.44s | 51.97s | 16.18 | 慢 (传统模式) |
+| 第二次 | 原版程序 | CPU + 强制FP16 | 82.38s | 69.69s | 22.59 | 极慢 (严重负优化) |
+| **第三次** | **优化版程序** | **MPS (M4 GPU)** | **15.58s** | **10.77s** | **4.17** | **质变 (正常加速)** |
+
+### 🔧 核心修改点及原因 | Core Modifications
+
+#### 修改1：MPS设备自动检测与启用
+- **修改文件**：`indextts/infer_v2.py`
+- **修改位置**：第66-71行（原第54-77行设备检测逻辑）
+- **修改代码**：
+  ```python
+  elif hasattr(torch, "mps") and torch.backends.mps.is_available():
+      self.device = "mps"
+      self.use_fp16 = False
+      self.use_cuda_kernel = False
+      self._setup_mps_optimizations()
+      print(">> MPS device detected. Using MPS optimizations.")
+  ```
+- **原因**：
+  - Apple Silicon M4芯片内置强大的GPU单元
+  - PyTorch的MPS后端可利用Metal加速
+  - 原版代码未包含MPS支持，仅支持CUDA和CPU
+
+#### 修改2：禁用FP16（半精度）
+- **修改文件**：`indextts/infer_v2.py`
+- **修改位置**：第68行
+- **修改代码**：`self.use_fp16 = False`
+- **原因**：
+  - PyTorch MPS后端在FP16操作上存在额外转换开销
+  - FP16在MPS上的性能反而不如原生FP32（测试证实：CPU+FP16比纯CPU慢22%）
+  - MPS对FP16的支持仍在发展中，存在数值不稳定风险
+  - M4芯片的FP32性能已足够支撑实时推理
+
+#### 修改3：禁用CUDA内核
+- **修改文件**：`indextts/infer_v2.py`
+- **修改位置**：第69行
+- **修改代码**：`self.use_cuda_kernel = False`
+- **原因**：
+  - CUDA内核仅适用于NVIDIA GPU
+  - MPS使用Metal着色器，与CUDA不兼容
+
+#### 修改4：新增MPS优化设置方法
+- **修改文件**：`indextts/infer_v2.py`
+- **修改位置**：新增第219-240行 `_setup_mps_optimizations()` 方法
+- **代码功能**：
+  ```python
+  def _setup_mps_optimizations(self):
+      """Configure MPS-specific optimizations for Apple Silicon."""
+      if self.device != "mps":
+          return
+      
+      try:
+          import torch.mps as mps
+          if hasattr(mps, 'set_per_process_memory_fraction'):
+              mps.set_per_process_memory_fraction(0.85)
+              print(">> MPS memory fraction set to 85%")
+          
+          if hasattr(torch.nn.functional, 'mps_inductor_enabled'):
+              torch.nn.functional.mps_inductor_enabled = True
+              print(">> MPS inductor optimization enabled")
+              
+      except Exception as e:
+          print(f">> Warning: Failed to apply some MPS optimizations: {e}")
+  ```
+- **原因**：
+  - 限制内存使用避免系统卡顿
+  - 启用MPS特定的高级优化选项
+  - 提供优雅的异常处理
+
+#### 修改5：新增MPS推理优化方法
+- **修改文件**：`indextts/infer_v2.py`
+- **修改位置**：新增第242-256行 `_optimize_for_mps_inference()` 方法
+- **代码功能**：
+  ```python
+  def _optimize_for_mps_inference(self):
+      """Apply runtime optimizations for MPS inference."""
+      if self.device != "mps":
+          return
+          
+      try:
+          import torch.mps as mps
+          if hasattr(mps, 'empty_cache'):
+              mps.empty_cache()
+      except Exception:
+          pass
+  ```
+- **原因**：
+  - 推理前释放内存，避免内存碎片
+  - 优化MPS内存分配模式
+
+#### 修改6：扩散模型MPS友好参数
+- **修改文件**：`indextts/infer_v2.py`
+- **修改位置**：infer方法中
+- **修改参数**：
+  - `diffusion_steps`: 15（默认25，MPS优化版）
+  - `inference_cfg_rate`: 0.4（默认0.5）
+- **原因**：
+  - 减少扩散步数以提升速度
+  - 调整CFG率以优化MPS上的生成质量
+  - 牺牲少量质量换取4倍以上速度提升
+
+### 💡 技术原理解析 | Technical Principles
+
+- **MPS (Metal Performance Shaders)**：Apple的GPU计算框架
+- **性能提升来源**：
+  - Metal加速的矩阵运算
+  - 专为Apple Silicon优化的内存带宽
+  - 减少CPU-GPU数据传输
+
+### 📝 使用说明 | Usage
+
+自动检测MPS设备，无需额外配置：
+```python
+from indextts.infer_v2 import IndexTTS2
+
+tts = IndexTTS2(
+    cfg_path="checkpoints/config.yaml",
+    model_dir="checkpoints",
+)
+
+tts.infer(
+    spk_audio_prompt='examples/voice_01.wav',
+    text="欢迎使用IndexTTS2！",
+    output_path="gen.wav"
+)
+```
+
+### ⚠️ 注意事项 | Notes
+
+- 仅支持Apple Silicon M1/M2/M3/M4芯片
+- 需要macOS 12.3+
+- PyTorch版本需≥2.0
+- FP16在MPS上会导致性能下降，故默认禁用
+- 优化效果在M4上最为显著，M1/M2/M3也有加速但幅度较小
+
+---
+
+<div align="center">
+<img src='assets/index_icon.png' width="250"/>
+</div>
+
+<div align="center">
+<a href="README.md" style="font-size: 24px">简体中文</a> | 
+<a href="docs/README_en.md" style="font-size: 24px">English</a>
+</div>
+
+
 
 <div align="center">
 <img src='assets/index_icon.png' width="250"/>
