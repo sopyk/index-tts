@@ -73,13 +73,16 @@ class IndexTTS2:
             self.device = "mps"
             self.use_fp16 = False
             self.use_cuda_kernel = False
-            self._setup_mps_optimizations()
-            print(">> MPS device detected. Using MPS optimizations.")
         else:
             self.device = "cpu"
             self.use_fp16 = False
             self.use_cuda_kernel = False
             print(">> Be patient, it may take a while to run in CPU mode.")
+
+        # Apply MPS optimizations regardless of whether device was explicit or auto-detected
+        if self.device == "mps":
+            self._setup_mps_optimizations()
+            print(">> MPS device detected. Using MPS optimizations.")
 
         self.cfg = OmegaConf.load(cfg_path)
         self.model_dir = model_dir
