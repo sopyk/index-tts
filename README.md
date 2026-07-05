@@ -10,6 +10,21 @@
 
 ---
 
+## 📝 本 Fork 更新记录 | Fork Changelog
+
+### 2026-07-05（使用 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 同步）
+
+- **基线**：已同步至官方 upstream `7264ce2`（`fix: fix indextts2 model resource checks (#707)`，2025-09 之后的最新修复）
+- **同步方式**：因早期 fork 是 zip-init（与 upstream 无共同祖先），采用 `git reset --hard upstream/main` + 重新 apply M4 优化 patch 的方式重建历史，避免长期 rebase 冲突
+- **本 fork 独有 commits**（`c94ce38` ← `33e9dd4` ← `6f6eed1` ← `c07171b` ← `7264ce2`）：
+  1. `c07171b` feat: M4 Mac MPS 优化（MPS 设备检测、禁用 FP16/CUDA kernel、新增 `_setup_mps_optimizations()`）
+  2. `6f6eed1` docs: README 顶部加 M4 优化说明
+  3. `33e9dd4` docs: 归档 Trae AI 的 M4 优化设计笔记
+  4. `c94ce38` fix: **本次修复** —— 当调用方显式传入 `device` 参数时，之前的 MPS 优化会被跳过；本次补丁让 MPS 优化在显式指定 device 的情况下也生效
+- **验证**：WebUI 中文推理正常（需 `LANG=zh_CN.UTF-8`），MPS RTF ~13（15-step diff, cfg 0.5），峰值显存 6-8GB
+
+---
+
 ## 🍎 M4芯片Mac优化版本 | M4 Chip Mac Optimization
 
 > **基于版本**：原版 [https://github.com/index-tts/index-tts](https://github.com/index-tts/index-tts) (IndexTTS-2 2025/09/08版本)
