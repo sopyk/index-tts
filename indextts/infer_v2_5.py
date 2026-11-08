@@ -278,6 +278,79 @@ class IndexTTS2:
         self.gr_progress = None
         self.model_version = self.cfg.version if hasattr(self.cfg, "version") else None
 
+        # Apply MPS optimizations regardless of whether device was explicit or auto-detected
+        # (mirrors the M4 Mac optimization from IndexTTS-2 infer_v2.py)
+        if self.device == "mps":
+            self._setup_mps_optimizations()
+            print(">> MPS device detected. Using MPS optimizations.")
+
+    def _setup_mps_optimizations(self):
+        """Configure MPS-specific optimizations for Apple Silicon.
+
+        This method applies MPS-specific settings to improve performance
+        on Apple Silicon chips (M1/M2/M3/M4).
+        """
+        if self.device != "mps":
+            return
+
+        try:
+            import torch.mps as mps
+
+            if hasattr(mps, 'set_per_process_memory_fraction'):
+                mps.set_per_process_memory_fraction(0.85)
+                print(">> MPS memory fraction set to 85%")
+
+            if hasattr(torch.nn.functional, 'mps_inductor_enabled'):
+                torch.nn.functional.mps_inductor_enabled = True
+                print(">> MPS inductor optimization enabled")
+
+        except Exception as e:
+            print(f">> Warning: Failed to apply some MPS optimizations: {e}")
+
+    def _optimize_for_mps_inference(self):
+        """Apply runtime optimizations for MPS inference.
+
+        Call this before heavy inference operations to optimize memory
+        and computation patterns for MPS.
+        """
+        if self.device != "mps":
+            return
+
+        try:
+            import torch.mps as mps
+            if hasattr(mps, 'empty_cache'):
+                mps.empty_cache()
+        except Exception:
+            pass
+
+    def _get_mps_optimized_params(self, generation_kwargs):
+        """Get MPS-optimized inference parameters.
+
+        Returns a dictionary of optimized parameters for better performance
+        on Apple Silicon chips. These parameters trade some quality for
+        significantly improved speed and reduced memory usage.
+
+        Recommended parameters for MPS:
+        - Reduced diffusion steps (15 instead of 25) - ~40% faster
+        - Optimized segment size to reduce memory pressure
+        - Lower cfg_rate for faster inference
+        """
+        if self.device != "mps":
+            return generation_kwargs
+
+        optimized_params = {
+            'diffusion_steps': 15,  # Reduced from 25 for ~40% speed improvement
+            'inference_cfg_rate': 0.5,  # Slightly reduced for faster inference
+            'max_text_tokens_per_segment': 100,  # Reduced for lower memory usage
+        }
+
+        # Override with user-provided values if specified
+        for key, default_value in optimized_params.items():
+            if key not in generation_kwargs:
+                generation_kwargs[key] = default_value
+
+        return generation_kwargs
+
     @torch.no_grad()
     def get_emb(self, input_features, attention_mask):
         vq_emb = self.semantic_model(
@@ -580,6 +653,12 @@ class IndexTTS2:
                   f"emo_text:{emo_text}")
         start_time = time.perf_counter()
 
+        if self.device == "mps":
+            self._optimize_for_mps_inference()
+            generation_kwargs = self._get_mps_optimized_params(generation_kwargs)
+            if 'max_text_tokens_per_segment' in generation_kwargs:
+                max_text_tokens_per_segment = generation_kwargs['max_text_tokens_per_segment']
+
         if use_emo_text or emo_vector is not None:
             # we're using a text or emotion vector guidance; so we must remove
             # "emotion reference voice", to ensure we use correct emotion mixing!
@@ -745,6 +824,8 @@ class IndexTTS2:
         for seg_idx, text_tokens in enumerate(segment_tokens):
             self._set_gr_progress(0.2 + 0.7 * seg_idx / segments_count,
                                   f"speech synthesis {seg_idx + 1}/{segments_count}...")
+            if self.device == "mps" and seg_idx > 0:
+                self._optimize_for_mps_inference()
             if verbose:
                 print(text_tokens)
                 print(f"text_tokens shape: {text_tokens.shape}, text_tokens type: {text_tokens.dtype}")
@@ -825,6 +906,10 @@ class IndexTTS2:
                     m_start_time = time.perf_counter()
                     diffusion_steps = 25
                     inference_cfg_rate = 0.7
+                    # MPS: lower diffusion steps/cfg for speed (mirrors infer_v2.py)
+                    if self.device == "mps":
+                        diffusion_steps = generation_kwargs.get('diffusion_steps', diffusion_steps)
+                        inference_cfg_rate = generation_kwargs.get('inference_cfg_rate', inference_cfg_rate)
                     S_infer = self.semantic_codec.decode(codes)
                     target_lengths = torch.LongTensor([int(S_infer.shape[1] * 1.72 * duration_factor)]).to(codes.device)
 
