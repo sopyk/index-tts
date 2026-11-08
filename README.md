@@ -12,6 +12,17 @@
 
 ## 📝 本 Fork 更新记录 | Fork Changelog
 
+### 2026-11-08：适配 IndexTTS-2.5（使用 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 同步）
+
+- **基线**：已同步至官方 upstream `main`（合并 65 个 commit，本次带入了 **IndexTTS-2.5**：多语种 ZH/EN/JA/ES/AR、新的语义编解码器与 s2mel/CFM 扩散路径、60509 词表的多语种 tokenizer、webui 版本选择 `--version 2.5` 等）
+- **M4/MPS 优化已完整移植到 2.5 代码路径** `indextts/infer_v2_5.py`（原 2.0 路径 `infer_v2.py` 的 MPS 优化同步保留，两条路径都可用）：
+  1. **设备检测**：MPS 上自动关闭 `use_bf16`（MPS 下 bf16 反而比 fp32 慢）与 `use_cuda_kernel`
+  2. **`_setup_mps_optimizations()`**：显存上限设为 85%、开启 MPS inductor 图优化
+  3. **`_optimize_for_mps_inference()`**：每段推理前清理 MPS cache（在多段循环中逐段调用）
+  4. **`_get_mps_optimized_params()`**：MPS 默认用 15 步扩散（原 25，提速约 40%）、cfg_rate 0.5、每段文本 token 上限 100，调用方显式传值时不覆盖
+- **实测（M4 Mac mini，`--version 2.5 --model_dir checkpoints-2.5`）**：`device=mps`、`bf16=False`、`cuda_kernel=False`，日志显示 `MPS memory fraction set to 85%` + `MPS inductor optimization enabled`，正常生成 5.11s 中文语音（峰值 0.541），webui 起于 `http://localhost:7860`
+- **2.5 权重**：不随仓库分发。启动 2.5 webui 时若 `./checkpoints` 不完整会自动从 ModelScope 拉取；也可手动放到 `checkpoints-2.5/` 并用 `--model_dir checkpoints-2.5` 指定
+
 ### 2026-07-05（使用 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 同步）
 
 - **基线**：已同步至官方 upstream `7264ce2`（`fix: fix indextts2 model resource checks (#707)`，2025-09 之后的最新修复）
