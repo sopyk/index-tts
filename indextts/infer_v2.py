@@ -17,8 +17,9 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from omegaconf import OmegaConf
 
 from indextts.gpt.model_v2 import UnifiedVoice
-from indextts.utils.maskgct_utils import build_semantic_model, build_semantic_codec
+from indextts.codec.maskgct_codec import build_semantic_codec
 from indextts.utils.checkpoint import load_checkpoint
+from indextts.utils.common import fade_out_tail, save_pcm_wav
 from indextts.utils.front import TextNormalizer, TextTokenizer
 
 from indextts.s2mel.modules.commons import load_checkpoint2, MyModel
@@ -26,10 +27,9 @@ from indextts.s2mel.modules.bigvgan import bigvgan
 from indextts.s2mel.modules.campplus.DTDNN import CAMPPlus
 from indextts.s2mel.modules.audio import mel_spectrogram
 
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, SeamlessM4TFeatureExtractor, Wav2Vec2BertModel
 from modelscope import AutoModelForCausalLM
 import safetensors
-from transformers import SeamlessM4TFeatureExtractor
 import random
 import torch.nn.functional as F
 
@@ -37,7 +37,7 @@ class IndexTTS2:
     def __init__(
             self, cfg_path="checkpoints/config.yaml", model_dir="checkpoints", use_fp16=False, device=None,
             use_cuda_kernel=None,use_deepspeed=False, use_accel=False, use_torch_compile=False,
-            aux_paths=None
+            use_qwen_emo=True, aux_paths=None
     ):
         """
         Args:
@@ -49,6 +49,9 @@ class IndexTTS2:
             use_deepspeed (bool): whether to use DeepSpeed or not.
             use_accel (bool): whether to use acceleration engine for GPT2 or not.
             use_torch_compile (bool): whether to use torch.compile for optimization or not.
+            use_qwen_emo (bool): if True, load the QwenEmotion text-to-emotion model.
+                Required for ``infer(..., use_emo_text=True)``. Attempting to use emotion-text
+                guidance when this is disabled will raise a RuntimeError.
             aux_paths (dict | None): pre-downloaded auxiliary model paths from ensure_models_available().
                 If None, downloads are performed automatically.
         """
@@ -91,7 +94,11 @@ class IndexTTS2:
         self.use_accel = use_accel
         self.use_torch_compile = use_torch_compile
 
-        self.qwen_emo = QwenEmotion(os.path.join(self.model_dir, self.cfg.qwen_emo_path))
+        if use_qwen_emo:
+            self.qwen_emo = QwenEmotion(os.path.join(self.model_dir, self.cfg.qwen_emo_path))
+        else:
+            self.qwen_emo = None
+            print(">> QwenEmotion not loaded (use_qwen_emo=False)")
 
         self.gpt = UnifiedVoice(**self.cfg.gpt, use_accel=self.use_accel)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
@@ -126,13 +133,12 @@ class IndexTTS2:
         # Load w2v-bert-2.0 from pre-downloaded local dir
         w2v_bert_dir = aux_paths["w2v_bert"]
         self.extract_features = SeamlessM4TFeatureExtractor.from_pretrained(w2v_bert_dir, local_files_only=True)
-        self.semantic_model, self.semantic_mean, self.semantic_std = build_semantic_model(
-            os.path.join(self.model_dir, self.cfg.w2v_stat),
-            model_path=w2v_bert_dir)
+        self.semantic_model = Wav2Vec2BertModel.from_pretrained(w2v_bert_dir, local_files_only=True)
         self.semantic_model = self.semantic_model.to(self.device)
         self.semantic_model.eval()
-        self.semantic_mean = self.semantic_mean.to(self.device)
-        self.semantic_std = self.semantic_std.to(self.device)
+        stat_mean_var = torch.load(os.path.join(self.model_dir, self.cfg.w2v_stat))
+        self.semantic_mean = stat_mean_var["mean"].to(self.device)
+        self.semantic_std = torch.sqrt(stat_mean_var["var"]).to(self.device)
 
         semantic_codec = build_semantic_codec(self.cfg.semantic_codec)
         semantic_code_ckpt = aux_paths["semantic_codec"]
@@ -486,6 +492,11 @@ class IndexTTS2:
 
         if use_emo_text:
             # automatically generate emotion vectors from text prompt
+            if self.qwen_emo is None:
+                raise RuntimeError(
+                    "use_emo_text=True requires QwenEmotion, but it was not loaded at init "
+                    "(use_qwen_emo=False). Re-construct IndexTTS2 with use_qwen_emo=True."
+                )
             if emo_text is None:
                 emo_text = text  # use main text prompt
             emo_dict = self.qwen_emo.inference(emo_text)
@@ -664,7 +675,7 @@ class IndexTTS2:
                         cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=text_tokens.device),
                         emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=text_tokens.device),
                         emo_vec=emovec,
-                        do_sample=True,
+                        do_sample=do_sample,
                         top_p=top_p,
                         top_k=top_k,
                         temperature=temperature,
@@ -772,6 +783,9 @@ class IndexTTS2:
         self._set_gr_progress(0.9, "saving audio...")
         wavs = self.insert_interval_silence(wavs, sampling_rate=sampling_rate, interval_silence=interval_silence)
         wav = torch.cat(wavs, dim=1)
+        # 停止符采样偏早时，末尾可能停在话音中间
+        # (index-tts/index-tts#247, #488, #523, #633)，详见 fade_out_tail()。
+        wav = fade_out_tail(wav, sampling_rate)
         wav_length = wav.shape[-1] / sampling_rate
         print(f">> gpt_gen_time: {gpt_gen_time:.2f} seconds")
         print(f">> gpt_forward_time: {gpt_forward_time:.2f} seconds")
@@ -790,7 +804,7 @@ class IndexTTS2:
                 print(">> remove old wav file:", output_path)
             if os.path.dirname(output_path) != "":
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            torchaudio.save(output_path, wav.type(torch.int16), sampling_rate)
+            save_pcm_wav(output_path, wav, sampling_rate)
             print(">> wav file saved to:", output_path)
             if stream_return:
                 return None
@@ -851,7 +865,52 @@ class QwenEmotion:
         self.min_score = 0.0
 
     def clamp_score(self, value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"QwenEmotion returned a non-numeric emotion score {value!r}. "
+                "Please retry the request."
+            ) from exc
         return max(self.min_score, min(self.max_score, value))
+
+    def normalize_content(self, content):
+        if isinstance(content, dict):
+            normalized = dict(content)
+        else:
+            normalized = {}
+
+        def label_to_cn_key(value):
+            if not isinstance(value, str):
+                return None
+
+            value = value.strip()
+            if value in self.cn_key_to_en:
+                return value
+
+            value_lower = value.lower()
+            for cn_key, en_key in self.cn_key_to_en.items():
+                if value_lower == en_key:
+                    return cn_key
+            return None
+
+        detected_key = label_to_cn_key(content) if isinstance(content, str) else None
+        if detected_key is None:
+            for alias in ("emotion", "emotion_label", "label", "情感", "情绪"):
+                detected_key = label_to_cn_key(normalized.get(alias))
+                if detected_key is not None:
+                    break
+        if detected_key is not None and all(key not in normalized for key in self.desired_vector_order):
+            normalized[detected_key] = 1.0
+
+        for cn_key in self.desired_vector_order:
+            detected_key = label_to_cn_key(normalized.get(cn_key))
+            if detected_key is not None:
+                normalized[cn_key] = 1.0 if detected_key == cn_key else 0.0
+                if detected_key != cn_key:
+                    normalized[detected_key] = 1.0
+
+        return normalized
 
     def convert(self, content):
         # generate emotion vector dictionary:
@@ -859,6 +918,7 @@ class QwenEmotion:
         # - convert Chinese keys to English
         # - clamp all values to the allowed min/max range
         # - use 0.0 for any values that were missing in `content`
+        content = self.normalize_content(content)
         emotion_dict = {
             self.cn_key_to_en[cn_key]: self.clamp_score(content.get(cn_key, 0.0))
             for cn_key in self.desired_vector_order

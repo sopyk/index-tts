@@ -10,6 +10,18 @@ from types import SimpleNamespace
 from unittest import mock
 
 
+def _mock_optional_dependency_imports():
+    """Make flash_attn/triton appear installed so acceleration CLI tests can run."""
+    original = importlib.import_module
+
+    def _fake_import(name, package=None):
+        if name in ("flash_attn", "triton"):
+            return mock.MagicMock()
+        return original(name, package)
+
+    return mock.patch("indextts.cli_v2.importlib.import_module", side_effect=_fake_import)
+
+
 REQUIRED_MODEL_FILES = [
     "config.yaml",
     "bpe.model",
@@ -134,7 +146,7 @@ class CheckCommandTests(unittest.TestCase):
 
     def test_check_returns_success_when_resources_packages_and_requested_device_are_available(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            model_dir = make_model_dir(Path(temp_dir))
+            model_dir = make_model_dir(Path(temp_dir).resolve())
 
             with patched_imports(fake_torch(cuda=True)):
                 from indextts.cli_v2 import main
@@ -154,7 +166,7 @@ class CheckCommandTests(unittest.TestCase):
 
     def test_check_returns_resource_error_when_model_directory_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            missing_model_dir = Path(temp_dir) / "missing"
+            missing_model_dir = Path(temp_dir).resolve() / "missing"
 
             from indextts.cli_v2 import main
 
@@ -170,7 +182,7 @@ class CheckCommandTests(unittest.TestCase):
 
     def test_check_returns_resource_error_when_required_model_files_are_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            model_dir = Path(temp_dir) / "checkpoints"
+            model_dir = Path(temp_dir).resolve() / "checkpoints"
             model_dir.mkdir()
             (model_dir / "config.yaml").write_text("placeholder", encoding="utf-8")
 
@@ -190,7 +202,7 @@ class CheckCommandTests(unittest.TestCase):
 
     def test_check_requires_the_full_key_model_resource_set(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            model_dir = Path(temp_dir) / "checkpoints"
+            model_dir = Path(temp_dir).resolve() / "checkpoints"
             model_dir.mkdir()
             for filename in [
                 "config.yaml",
@@ -216,7 +228,7 @@ class CheckCommandTests(unittest.TestCase):
 
     def test_check_requires_the_auxiliary_model_cache_resources(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            model_dir = make_model_dir(Path(temp_dir), include_aux=False)
+            model_dir = make_model_dir(Path(temp_dir).resolve(), include_aux=False)
 
             from indextts.cli_v2 import main
 
@@ -236,7 +248,7 @@ class CheckCommandTests(unittest.TestCase):
 
     def test_check_requires_file_resources_and_directory_resources(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            model_dir = Path(temp_dir) / "checkpoints"
+            model_dir = Path(temp_dir).resolve() / "checkpoints"
             model_dir.mkdir()
             for filename in REQUIRED_MODEL_FILES:
                 if filename == "gpt.pth":
@@ -259,7 +271,7 @@ class CheckCommandTests(unittest.TestCase):
 
     def test_check_returns_runtime_error_when_required_python_package_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            model_dir = make_model_dir(Path(temp_dir))
+            model_dir = make_model_dir(Path(temp_dir).resolve())
 
             with patched_missing_import("torchaudio", fake_torch(cuda=True)):
                 from indextts.cli_v2 import main
@@ -276,7 +288,7 @@ class CheckCommandTests(unittest.TestCase):
 
     def test_check_returns_runtime_error_when_requested_device_is_unavailable(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            model_dir = make_model_dir(Path(temp_dir))
+            model_dir = make_model_dir(Path(temp_dir).resolve())
 
             with patched_imports(fake_torch(cuda=False)):
                 from indextts.cli_v2 import main
@@ -292,7 +304,7 @@ class CheckCommandTests(unittest.TestCase):
 
     def test_check_returns_runtime_error_when_requested_cuda_index_does_not_exist(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            model_dir = make_model_dir(Path(temp_dir))
+            model_dir = make_model_dir(Path(temp_dir).resolve())
 
             with patched_imports(fake_torch(cuda=True, cuda_device_count=1)):
                 from indextts.cli_v2 import main
@@ -308,7 +320,7 @@ class CheckCommandTests(unittest.TestCase):
 
     def test_check_returns_runtime_error_when_requested_xpu_index_does_not_exist(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            model_dir = make_model_dir(Path(temp_dir))
+            model_dir = make_model_dir(Path(temp_dir).resolve())
 
             with patched_imports(fake_torch(xpu=True, xpu_device_count=1)):
                 from indextts.cli_v2 import main
@@ -328,8 +340,11 @@ class SynthCommandTests(unittest.TestCase):
         self.user_state = tempfile.TemporaryDirectory()
         self.env_patch = mock.patch.dict(os.environ, user_state_env(Path(self.user_state.name)), clear=False)
         self.env_patch.start()
+        self._import_patch = _mock_optional_dependency_imports()
+        self._import_patch.start()
 
     def tearDown(self):
+        self._import_patch.stop()
         self.env_patch.stop()
         self.user_state.cleanup()
 
@@ -373,7 +388,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_generates_audio_from_inline_text(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -405,6 +420,8 @@ class SynthCommandTests(unittest.TestCase):
                         "device": None,
                         "use_cuda_kernel": False,
                         "use_deepspeed": False,
+                        "use_accel": False,
+                        "use_torch_compile": False,
                     },
                 ),
                 (
@@ -421,7 +438,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_generates_audio_from_utf8_text_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             text_path = temp_path / "input.txt"
             output_path = temp_path / "out.wav"
@@ -448,7 +465,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_generates_audio_from_stdin(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -473,7 +490,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_uses_emotion_audio_and_weight(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             emotion_path = temp_path / "emotion.wav"
             output_path = temp_path / "out.wav"
@@ -507,7 +524,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_uses_emotion_text_and_weight(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -539,7 +556,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_uses_emotion_vector_and_weight(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -572,7 +589,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_accepts_python_list_style_emotion_vector(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -600,7 +617,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_does_not_rewrite_valid_emotion_vector(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -627,7 +644,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_emotion_vector_is_empty(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -665,7 +682,7 @@ class SynthCommandTests(unittest.TestCase):
         for vector, expected_error in cases:
             with self.subTest(vector=vector):
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_path = Path(temp_dir)
+                    temp_path = Path(temp_dir).resolve()
                     voice_path = temp_path / "voice.wav"
                     output_path = temp_path / "out.wav"
                     voice_path.write_bytes(b"voice")
@@ -695,7 +712,7 @@ class SynthCommandTests(unittest.TestCase):
         for other_emotion_args in (["--emotion-audio"], ["--emotion-text", "warm and calm"]):
             with self.subTest(other_emotion_args=other_emotion_args):
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_path = Path(temp_dir)
+                    temp_path = Path(temp_dir).resolve()
                     voice_path = temp_path / "voice.wav"
                     emotion_path = temp_path / "emotion.wav"
                     output_path = temp_path / "out.wav"
@@ -726,7 +743,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_emotion_text_is_empty(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -753,7 +770,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_emotion_sources_conflict(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             emotion_path = temp_path / "emotion.wav"
             output_path = temp_path / "out.wav"
@@ -784,7 +801,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_empty_emotion_audio_conflicts_with_emotion_text(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -813,7 +830,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_resource_error_when_emotion_audio_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             emotion_path = temp_path / "missing-emotion.wav"
             output_path = temp_path / "out.wav"
@@ -842,7 +859,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_emotion_weight_is_not_a_float(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             emotion_path = temp_path / "emotion.wav"
             output_path = temp_path / "out.wav"
@@ -873,7 +890,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_text_source_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -896,7 +913,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_text_sources_conflict(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             text_path = temp_path / "input.txt"
             output_path = temp_path / "out.wav"
@@ -925,7 +942,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_empty_text_source_conflicts_with_stdin(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -952,7 +969,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_text_is_empty_after_trimming(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -977,7 +994,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_resource_error_when_text_file_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             text_path = temp_path / "missing.txt"
             output_path = temp_path / "out.wav"
@@ -1004,7 +1021,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_resource_error_when_voice_file_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "missing.wav"
             output_path = temp_path / "out.wav"
 
@@ -1029,7 +1046,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_voice_argument_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             output_path = temp_path / "out.wav"
 
             exit_code, stdout, stderr, calls = self.run_synth(
@@ -1050,7 +1067,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_output_exists_without_force(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -1077,7 +1094,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_input_error_when_output_argument_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             voice_path.write_bytes(b"voice")
 
@@ -1099,7 +1116,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_allows_existing_output_when_force_is_set(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -1126,7 +1143,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_creates_output_parent_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "nested" / "audio" / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -1153,7 +1170,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_maps_runtime_options_to_indextts2(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             model_dir = make_model_dir(temp_path)
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
@@ -1176,6 +1193,8 @@ class SynthCommandTests(unittest.TestCase):
                     "--fp16",
                     "--deepspeed",
                     "--cuda-kernel",
+                    "--accel",
+                    "--torch-compile",
                     "--verbose",
                 ],
             )
@@ -1192,13 +1211,15 @@ class SynthCommandTests(unittest.TestCase):
                 "device": "cuda:0",
                 "use_cuda_kernel": True,
                 "use_deepspeed": True,
+                "use_accel": True,
+                "use_torch_compile": True,
             },
         )
         self.assertTrue(calls[1][1]["verbose"])
 
     def test_synth_returns_inference_error_when_indextts2_infer_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -1225,7 +1246,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_inference_error_when_indextts2_initialization_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -1251,7 +1272,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_resource_error_when_model_directory_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             missing_model_dir = temp_path / "missing-models"
@@ -1281,7 +1302,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_resource_error_when_model_file_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             model_dir = temp_path / "models"
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
@@ -1314,7 +1335,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_returns_runtime_error_when_indextts2_import_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             model_dir = make_model_dir(temp_path)
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
@@ -1346,7 +1367,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_load_indextts2_points_huggingface_cache_at_model_resource_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            model_dir = Path(temp_dir) / "models"
+            model_dir = Path(temp_dir).resolve() / "models"
 
             class FakeIndexTTS2:
                 pass
@@ -1367,7 +1388,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_suppresses_model_stdout_when_not_verbose(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
@@ -1395,7 +1416,7 @@ class SynthCommandTests(unittest.TestCase):
 
     def test_synth_allows_model_stdout_when_verbose(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            temp_path = Path(temp_dir).resolve()
             voice_path = temp_path / "voice.wav"
             output_path = temp_path / "out.wav"
             voice_path.write_bytes(b"voice")
