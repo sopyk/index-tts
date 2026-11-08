@@ -443,8 +443,27 @@ class MyModel(nn.Module):
         """Enable torch.compile optimization.
         
         This method applies torch.compile to the model for significant
-        performance improvements during inference.
+        performance improvements during inference. It also configures distributed
+        training optimizations if applicable.
+        
+        MPS Optimization:
+        On Apple Silicon, torch.compile may have limited support. This method
+        provides graceful fallback and configuration for both CUDA and MPS devices.
         """
+        if torch.distributed.is_initialized():
+            torch._inductor.config.reorder_for_compute_comm_overlap = True
+        
+        device = next(self.parameters()).device
+        compile_kwargs = {
+            'fullgraph': True,
+            'dynamic': True,
+        }
+        
+        if device.type == 'mps':
+            print(">> Note: torch.compile on MPS has limited optimization support.")
+            print(">> For best MPS performance, rely on built-in MPS optimizations instead.")
+            compile_kwargs['mode'] = 'default'
+        
         if 'cfm' in self.models:
             self.models['cfm'].enable_torch_compile()
 
